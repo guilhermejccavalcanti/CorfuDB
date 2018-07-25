@@ -1,5 +1,6 @@
 package org.corfudb.infrastructure.log;
 
+import static org.corfudb.infrastructure.utils.Persistence.syncDirectory;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.hash.Hasher;
 import com.google.common.hash.Hashing;
@@ -56,8 +57,7 @@ import org.corfudb.protocols.wireprotocol.IMetadata;
 import org.corfudb.protocols.wireprotocol.LogData;
 import org.corfudb.runtime.exceptions.DataCorruptionException;
 import org.corfudb.runtime.exceptions.OverwriteException;
-
-import static org.corfudb.infrastructure.utils.Persistence.syncDirectory;
+import org.corfudb.runtime.view.Address;
 
 
 /**
@@ -83,7 +83,7 @@ public class StreamLogFiles implements StreamLog, StreamLogWithRankedAddressSpac
     public final String logDir;
     private final boolean noVerify;
     private final ServerContext serverContext;
-    private final AtomicLong globalTail = new AtomicLong(0L);
+    private final AtomicLong globalTail = new AtomicLong(Address.NON_ADDRESS);
     private Map<String, SegmentHandle> writeChannels;
     private Set<FileChannel> channelsToSync;
     private MultiReadWriteLock segmentLocks = new MultiReadWriteLock();
@@ -115,7 +115,7 @@ public class StreamLogFiles implements StreamLog, StreamLogWithRankedAddressSpac
 
         // This can happen if a prefix trim happens on
         // addresses that haven't been written
-        if (getGlobalTail() < getTrimMark()) {
+        if (Math.max(getGlobalTail(), 0L) < getTrimMark()) {
             syncTailSegment(getTrimMark() - 1);
         }
     }
@@ -1335,7 +1335,7 @@ public class StreamLogFiles implements StreamLog, StreamLogWithRankedAddressSpac
     @Override
     public void reset() {
         // Trim all segments
-        long endSegment = (globalTail.get() / RECORDS_PER_LOG_FILE);
+        long endSegment = (Math.max(globalTail.get(), 0L) / RECORDS_PER_LOG_FILE);
         log.warn("Global Tail:{}, endSegment={}", globalTail.get(), endSegment);
 
         // Close segments before deleting their corresponding log files
@@ -1353,7 +1353,7 @@ public class StreamLogFiles implements StreamLog, StreamLogWithRankedAddressSpac
 
         serverContext.setStartingAddress(0L);
         serverContext.setTailSegment(0L);
-        globalTail.set(0L);
+        globalTail.set(Address.NON_ADDRESS);
         initializeStartingAddress();
         initializeMaxGlobalAddress();
 

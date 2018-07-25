@@ -7,10 +7,11 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
+import lombok.extern.slf4j.Slf4j;
+
 import org.corfudb.protocols.wireprotocol.LogData;
 import org.corfudb.runtime.exceptions.OverwriteException;
-
-import lombok.extern.slf4j.Slf4j;
+import org.corfudb.runtime.view.Address;
 
 /**
  * This class implements the StreamLog interface using a Java hash map.
@@ -21,7 +22,7 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 public class InMemoryStreamLog implements StreamLog, StreamLogWithRankedAddressSpace {
 
-    private final AtomicLong globalTail = new AtomicLong(0L);
+    private final AtomicLong globalTail = new AtomicLong(Address.NON_ADDRESS);
     private Map<Long, LogData> logCache;
     private Set<Long> trimmed;
     private volatile long startingAddress;
@@ -155,7 +156,7 @@ public class InMemoryStreamLog implements StreamLog, StreamLogWithRankedAddressS
     @Override
     public void reset() {
         startingAddress = 0;
-        globalTail.set(0L);
+        globalTail.set(Address.NON_ADDRESS);
         // Clear the trimmed addresses record.
         trimmed.clear();
         // Clearing all data from the cache.

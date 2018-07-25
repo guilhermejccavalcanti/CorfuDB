@@ -1,6 +1,16 @@
 package org.corfudb.recovery;
 
-import javax.annotation.Nonnull;
+import static org.corfudb.recovery.RecoveryUtils.createObjectIfNotExist;
+import static org.corfudb.recovery.RecoveryUtils.deserializeLogData;
+import static org.corfudb.recovery.RecoveryUtils.getCorfuCompileProxy;
+import static org.corfudb.recovery.RecoveryUtils.getLogData;
+import static org.corfudb.recovery.RecoveryUtils.getSnapShotAddressOfCheckPoint;
+import static org.corfudb.recovery.RecoveryUtils.getStartAddressOfCheckPoint;
+import static org.corfudb.recovery.RecoveryUtils.isCheckPointEntry;
+import static org.corfudb.runtime.view.Address.isAddress;
+import static org.corfudb.util.Utils.getMaxGlobalTail;
+import com.google.common.util.concurrent.ThreadFactoryBuilder;
+
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -14,12 +24,14 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BiConsumer;
 
-import com.google.common.util.concurrent.ThreadFactoryBuilder;
+import javax.annotation.Nonnull;
+
 import lombok.Data;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.experimental.Accessors;
 import lombok.extern.slf4j.Slf4j;
+
 import org.corfudb.protocols.logprotocol.CheckpointEntry;
 import org.corfudb.protocols.logprotocol.LogEntry;
 import org.corfudb.protocols.logprotocol.MultiObjectSMREntry;
@@ -33,14 +45,12 @@ import org.corfudb.runtime.collections.SMRMap;
 import org.corfudb.runtime.exceptions.unrecoverable.UnrecoverableCorfuInterruptedError;
 import org.corfudb.runtime.object.CorfuCompileProxy;
 import org.corfudb.runtime.view.Address;
+import org.corfudb.runtime.view.Layout;
 import org.corfudb.runtime.view.ObjectBuilder;
 import org.corfudb.util.CFUtils;
 import org.corfudb.util.Utils;
 import org.corfudb.util.serializer.ISerializer;
 import org.corfudb.util.serializer.Serializers;
-
-import static org.corfudb.recovery.RecoveryUtils.*;
-import static org.corfudb.runtime.view.Address.isAddress;
 
 /** The FastObjectLoader reconstructs the coalesced state of SMRMaps through sequential log read
  *
@@ -80,11 +90,11 @@ public class FastObjectLoader {
 
     @Setter
     @Getter
-    private long logHead = -1;
+    private long logHead = Address.NON_EXIST;
 
     @Setter
     @Getter
-    private long logTail = -1;
+    private long logTail = Address.NON_EXIST;
 
     @Setter
     @Getter
@@ -248,7 +258,11 @@ public class FastObjectLoader {
     }
 
     private void findAndSetLogTail() {
-        logTail = runtime.getSequencerView().query().getTokenValue();
+        Layout newLayout = runtime.getLayoutView().getLayout();
+        Layout.LayoutSegment latestSegment = newLayout.getSegments()
+                .get(newLayout.getSegments().size() - 1);
+        logTail = getMaxGlobalTail(newLayout, latestSegment, runtime);
+        log.info("findAndSetLogTail: the global tail of the log is at {} at epoch {}", logTail, newLayout.getEpoch());
     }
 
     private void resetAddressProcessed() {
@@ -473,11 +487,11 @@ public class FastObjectLoader {
      *
      */
     private void initializeHeadAndTails() {
-        if (logHead < 0) {
+        if (logHead == Address.NON_EXIST) {
             findAndSetLogHead();
         }
 
-        if (logTail < 0) {
+        if (logTail == Address.NON_EXIST) {
             findAndSetLogTail();
         }
 

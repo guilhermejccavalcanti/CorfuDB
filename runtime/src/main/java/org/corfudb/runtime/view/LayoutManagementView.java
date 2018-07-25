@@ -1,11 +1,11 @@
 package org.corfudb.runtime.view;
 
+import static org.corfudb.util.Utils.getMaxGlobalTail;
+
 import java.util.Collections;
-import java.util.Comparator;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.locks.ReentrantLock;
 
 import javax.annotation.Nonnull;
@@ -136,7 +136,7 @@ public class LayoutManagementView extends AbstractView {
                 Layout.LayoutSegment latestSegment =
                         currentLayout.getSegments().get(currentLayout.getSegments().size() - 1);
                 layoutBuilder.addLogunitServer(logUnitStripeIndex,
-                        getMaxGlobalTail(currentLayout, latestSegment),
+                        getMaxGlobalTail(currentLayout, latestSegment, runtime),
                         endpoint);
             }
             if (isUnresponsiveServer) {
@@ -184,7 +184,7 @@ public class LayoutManagementView extends AbstractView {
             Layout.LayoutSegment latestSegment =
                     currentLayout.getSegments().get(currentLayout.getSegments().size() - 1);
             layoutBuilder.addLogunitServer(0,
-                    getMaxGlobalTail(currentLayout, latestSegment),
+                    getMaxGlobalTail(currentLayout, latestSegment, runtime),
                     endpoint);
             layoutBuilder.removeUnresponsiveServers(Collections.singleton(endpoint));
             newLayout = layoutBuilder.build();
@@ -385,48 +385,6 @@ public class LayoutManagementView extends AbstractView {
     }
 
     /**
-     * Fetches the max global log tail from the log unit cluster. This depends on the mode of
-     * replication being used.
-     * CHAIN: Block on fetch of global log tail from the head log unitin every stripe.
-     * QUORUM: Block on fetch of global log tail from a majority in every stripe.
-     *
-     * @param layout  Latest layout to get clients to fetch tails.
-     * @param segment Latest layout segment.
-     * @return The max global log tail obtained from the log unit servers.
-     */
-    private long getMaxGlobalTail(Layout layout, Layout.LayoutSegment segment) {
-        long maxTokenRequested = 0;
-
-        // Query the tail of the head log unit in every stripe.
-        if (segment.getReplicationMode().equals(Layout.ReplicationMode.CHAIN_REPLICATION)) {
-            for (Layout.LayoutStripe stripe : segment.getStripes()) {
-                maxTokenRequested = Math.max(maxTokenRequested,
-                        CFUtils.getUninterruptibly(
-                                runtime.getLayoutView().getRuntimeLayout(layout)
-                                        .getLogUnitClient(stripe.getLogServers().get(0))
-                                        .getTail()));
-
-            }
-        } else if (segment.getReplicationMode()
-                .equals(Layout.ReplicationMode.QUORUM_REPLICATION)) {
-            for (Layout.LayoutStripe stripe : segment.getStripes()) {
-                CompletableFuture<Long>[] completableFutures = stripe.getLogServers()
-                        .stream()
-                        .map(s -> runtime.getLayoutView().getRuntimeLayout(layout)
-                                .getLogUnitClient(s).getTail())
-                        .toArray(CompletableFuture[]::new);
-                QuorumFuturesFactory.CompositeFuture<Long> quorumFuture =
-                        QuorumFuturesFactory.getQuorumFuture(Comparator.naturalOrder(),
-                                completableFutures);
-                maxTokenRequested = Math.max(maxTokenRequested,
-                        CFUtils.getUninterruptibly(quorumFuture));
-
-            }
-        }
-        return maxTokenRequested;
-    }
-
-    /**
      * Reconfigures the sequencer.
      * If the primary sequencer has changed in the new layout,
      * the global tail of the log units are queried and used to set
@@ -450,7 +408,7 @@ public class LayoutManagementView extends AbstractView {
                     return;
                 }
 
-                long maxTokenRequested = 0L;
+                long maxTokenRequested = -1L;
                 Map<UUID, Long> streamTails = Collections.emptyMap();
                 boolean bootstrapWithoutTailsUpdate = true;
 
@@ -460,14 +418,16 @@ public class LayoutManagementView extends AbstractView {
                         .equals(newLayout.getPrimarySequencer())) {
                     Layout.LayoutSegment latestSegment = newLayout.getSegments()
                             .get(newLayout.getSegments().size() - 1);
-                    maxTokenRequested = getMaxGlobalTail(newLayout, latestSegment);
+                    maxTokenRequested = getMaxGlobalTail(newLayout, latestSegment, runtime);
 
                     FastObjectLoader fastObjectLoader = new FastObjectLoader(runtime);
                     fastObjectLoader.setRecoverSequencerMode(true);
                     fastObjectLoader.setLoadInCache(false);
 
                     // FastSMRLoader sets the logHead based on trim mark.
-                    fastObjectLoader.setLogTail(maxTokenRequested);
+
+                    long tail = maxTokenRequested;
+                    fastObjectLoader.setLogTail(tail);
                     fastObjectLoader.loadMaps();
                     streamTails = fastObjectLoader.getStreamTails();
                     verifyStreamTailsMap(streamTails);
