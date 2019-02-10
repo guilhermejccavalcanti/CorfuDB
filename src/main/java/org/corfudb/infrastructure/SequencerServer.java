@@ -7,7 +7,6 @@ import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import org.corfudb.protocols.wireprotocol.*;
 import org.corfudb.util.Utils;
-
 import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -40,20 +39,18 @@ public class SequencerServer extends AbstractServer {
     /**
      * A scheduler, which is used to schedule checkpoints and lease renewal
      */
-    private final ScheduledExecutorService scheduler =
-            Executors.newScheduledThreadPool(
-                    1,
-                    new ThreadFactoryBuilder()
-                            .setDaemon(true)
-                            .setNameFormat("Seq-Checkpoint-%d")
-                            .build());
+    private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1, new ThreadFactoryBuilder().setDaemon(true).setNameFormat("Seq-Checkpoint-%d").build());
+
     @Getter
     long epoch;
+
     AtomicLong globalIndex;
+
     /**
      * The file channel.
      */
     FileChannel fc;
+
     /**
      * A simple map of the most recently issued token for any given stream.
      */
@@ -67,20 +64,11 @@ public class SequencerServer extends AbstractServer {
         lastIssuedMap = new ConcurrentHashMap<>();
         lastLocalOffsetMap = new ConcurrentHashMap<>();
         globalIndex = new AtomicLong();
-
         try {
             if (!(Boolean) opts.get("--memory")) {
-                fc = FileChannel.open(FileSystems.getDefault().getPath(opts.get("--log-path")
-                                + File.separator + "sequencer_checkpoint"),
-                        EnumSet.of(StandardOpenOption.READ, StandardOpenOption.WRITE,
-                                StandardOpenOption.CREATE, StandardOpenOption.SPARSE));
-                // schedule checkpointing.
-                scheduler.scheduleAtFixedRate(this::checkpointState,
-                        Utils.parseLong(opts.get("--checkpoint")),
-                        Utils.parseLong(opts.get("--checkpoint")),
-                        TimeUnit.SECONDS);
+                fc = FileChannel.open(FileSystems.getDefault().getPath(opts.get("--log-path") + File.separator + "sequencer_checkpoint"), EnumSet.of(StandardOpenOption.READ, StandardOpenOption.WRITE, StandardOpenOption.CREATE, StandardOpenOption.SPARSE));
+                scheduler.scheduleAtFixedRate(this::checkpointState, Utils.parseLong(opts.get("--checkpoint")), Utils.parseLong(opts.get("--checkpoint")), TimeUnit.SECONDS);
             }
-
             long newIndex = Utils.parseLong(opts.get("--initial-token"));
             if (newIndex == -1) {
                 if (!(Boolean) opts.get("--memory")) {
@@ -124,102 +112,95 @@ public class SequencerServer extends AbstractServer {
 
     @Override
     public synchronized void handleMessage(CorfuMsg msg, ChannelHandlerContext ctx, IServerRouter r) {
-        switch (msg.getMsgType()) {
-            case TOKEN_REQ: {
-                TokenRequest req = ((CorfuPayloadMsg<TokenRequest>) msg).getPayload();
-                if (req.getNumTokens() == 0) {
-                    long max = 0L;
-                    boolean hit = false;
-                    ImmutableMap.Builder<UUID, Long> streamsLastIssued = ImmutableMap.builder();
-                    for (UUID id : req.getStreams()) {
-                        lastLocalOffsetMap.compute(id, (k, v) -> {
-                            if (v == null) {
-                                streamsLastIssued.put(k, -1L);
-                                return null;
+        switch(msg.getMsgType()) {
+            case TOKEN_REQ:
+                {
+                    TokenRequest req = ((CorfuPayloadMsg<TokenRequest>) msg).getPayload();
+                    if (req.getNumTokens() == 0) {
+                        long max = 0L;
+                        boolean hit = false;
+                        ImmutableMap.Builder<UUID, Long> streamsLastIssued = ImmutableMap.builder();
+                        for (UUID id : req.getStreams()) {
+                            lastLocalOffsetMap.compute(id, ( k,  v) -> {
+                                if (v == null) {
+                                    streamsLastIssued.put(k, -1L);
+                                    return null;
+                                }
+                                streamsLastIssued.put(k, v);
+                                return v;
+                            });
+                            Long lastIssued = lastIssuedMap.get(id);
+                            if (lastIssued != null) {
+                                hit = true;
                             }
-                            streamsLastIssued.put(k, v);
-                            return v;
-                        });
-                        Long lastIssued = lastIssuedMap.get(id);
-                        if (lastIssued != null) {
-                            hit = true;
+                            max = Math.max(max, lastIssued == null ? Long.MIN_VALUE : lastIssued);
                         }
-                        max = Math.max(max, lastIssued == null ? Long.MIN_VALUE : lastIssued);
-                    }
-                    if (!hit) {
-                        max = -1L; //no token ever issued
-                    }
-                    if (req.getStreams().size() == 0) {
-                        max = globalIndex.get() - 1;
-                    }
-                    r.sendResponse(ctx, msg, CorfuMsgType.TOKEN_RES.payloadMsg(
-                                    new TokenResponse(max, Collections.emptyMap(), streamsLastIssued.build())));
-                } else {
-                    long thisIssue = globalIndex.getAndAdd(req.getNumTokens());
-                    if (req.getStreams() == null) {
-                        r.sendResponse(ctx, msg, CorfuMsgType.TOKEN_RES.payloadMsg(
-                                new TokenResponse(thisIssue, Collections.emptyMap(), Collections.emptyMap())));
-                        return;
-                    }
-                    if (req.getTxnResolution()) {
-                        // Then also need a read timestamp.
-                        long timestamp = req.getReadTimestamp();
-                        if (timestamp != -1L) {
-                            AtomicBoolean abort = new AtomicBoolean(false);
-                            for (UUID id : req.getStreams()) {
-                                if (abort.get())
-                                    break;
-                                lastIssuedMap.compute(id, (k, v) -> {
-                                    if (v == null) {
-                                        return null;
-                                    } else {
-                                        if (v > timestamp) {
-                                            log.debug("Rejecting request due to {} > {} on stream {}", v, timestamp, id);
-                                            abort.set(true);
-                                        }
+                        if (!hit) {
+                            max = -1L;
+                        }
+                        if (req.getStreams().size() == 0) {
+                            max = globalIndex.get() - 1;
+                        }
+                        r.sendResponse(ctx, msg, CorfuMsgType.TOKEN_RES.payloadMsg(new TokenResponse(max, Collections.emptyMap(), streamsLastIssued.build())));
+                    } else {
+                        long thisIssue = globalIndex.getAndAdd(req.getNumTokens());
+                        if (req.getStreams() == null) {
+                            r.sendResponse(ctx, msg, CorfuMsgType.TOKEN_RES.payloadMsg(new TokenResponse(thisIssue, Collections.emptyMap(), Collections.emptyMap())));
+                            return;
+                        }
+                        if (req.getTxnResolution()) {
+                            long timestamp = req.getReadTimestamp();
+                            if (timestamp != -1L) {
+                                AtomicBoolean abort = new AtomicBoolean(false);
+                                for (UUID id : req.getStreams()) {
+                                    if (abort.get()) {
+                                        break;
                                     }
-                                    return v;
+                                    lastIssuedMap.compute(id, ( k,  v) -> {
+                                        if (v == null) {
+                                            return null;
+                                        } else {
+                                            if (v > timestamp) {
+                                                log.debug("Rejecting request due to {} > {} on stream {}", v, timestamp, id);
+                                                abort.set(true);
+                                            }
+                                        }
+                                        return v;
+                                    });
+                                }
+                                if (abort.get()) {
+                                    globalIndex.getAndAdd(-req.getNumTokens());
+                                    r.sendResponse(ctx, msg, CorfuMsgType.TOKEN_RES.payloadMsg(new TokenResponse(-1L, Collections.emptyMap(), Collections.emptyMap())));
+                                    return;
+                                }
+                            }
+                        }
+                        ImmutableMap.Builder<UUID, Long> mb = ImmutableMap.builder();
+                        ImmutableMap.Builder<UUID, Long> localAddresses = ImmutableMap.builder();
+                        for (UUID id : req.getStreams()) {
+                            lastIssuedMap.compute(id, ( k,  v) -> {
+                                if (v == null) {
+                                    mb.put(k, -1L);
+                                    return thisIssue + req.getNumTokens() - 1;
+                                }
+                                mb.put(k, v);
+                                return Math.max(thisIssue + req.getNumTokens() - 1, v);
+                            });
+                            if (((CorfuPayloadMsg<TokenRequest>) msg).getPayload().getReplexOverwrite() || !((CorfuPayloadMsg<TokenRequest>) msg).getPayload().getOverwrite()) {
+                                lastLocalOffsetMap.compute(id, ( k,  v) -> {
+                                    if (v == null) {
+                                        localAddresses.put(k, 0L);
+                                        return 0L;
+                                    }
+                                    localAddresses.put(k, v + req.getNumTokens());
+                                    return v + req.getNumTokens();
                                 });
                             }
-                            if (abort.get()) {
-                                globalIndex.getAndAdd(-req.getNumTokens());
-                                r.sendResponse(ctx, msg, CorfuMsgType.TOKEN_RES.payloadMsg(
-                                        new TokenResponse(-1L, Collections.emptyMap(), Collections.emptyMap())));
-                                return;
-                            }
                         }
+                        r.sendResponse(ctx, msg, CorfuMsgType.TOKEN_RES.payloadMsg(new TokenResponse(thisIssue, mb.build(), localAddresses.build())));
                     }
-
-                    ImmutableMap.Builder<UUID, Long> mb = ImmutableMap.builder();
-                    ImmutableMap.Builder<UUID, Long> localAddresses = ImmutableMap.builder();
-                    for (UUID id : req.getStreams()) {
-                        lastIssuedMap.compute(id, (k, v) -> {
-                            if (v == null) {
-                                mb.put(k, -1L);
-                                return thisIssue + req.getNumTokens() - 1;
-                            }
-                            mb.put(k, v);
-                            return Math.max(thisIssue + req.getNumTokens() - 1, v);
-                        });
-                        if (((CorfuPayloadMsg<TokenRequest>) msg).getPayload().getReplexOverwrite() ||
-                                !((CorfuPayloadMsg<TokenRequest>) msg).getPayload().getOverwrite()) {
-                            lastLocalOffsetMap.compute(id, (k, v) -> {
-                                if (v == null) {
-                                    localAddresses.put(k, 0L);
-                                    return 0L;
-                                }
-                                localAddresses.put(k, v + req.getNumTokens());
-                                return v + req.getNumTokens();
-                            });
-                        }
-                    }
-                    r.sendResponse(ctx, msg, CorfuMsgType.TOKEN_RES.payloadMsg(
-                            new TokenResponse(thisIssue,
-                                    mb.build(),
-                                    localAddresses.build())));
                 }
-            }
-            break;
+                break;
             default:
                 log.warn("Unknown message type {} passed to handler!", msg.getMsgType());
                 throw new RuntimeException("Unsupported message passed to handler!");

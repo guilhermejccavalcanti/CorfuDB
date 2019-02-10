@@ -9,7 +9,6 @@ import org.corfudb.runtime.CorfuRuntime;
 import org.corfudb.runtime.clients.SequencerClient;
 import org.corfudb.runtime.exceptions.OverwriteException;
 import org.corfudb.runtime.exceptions.ReplexOverwriteException;
-
 import java.util.Collections;
 import java.util.Set;
 import java.util.UUID;
@@ -37,7 +36,6 @@ public class StreamsView {
      * @return A view
      */
     public StreamView get(UUID stream) {
-        // Todo(Maithem): we should have a mechanism for proper exclusion of a set of ids reserved by the system
         return new StreamView(runtime, stream);
     }
 
@@ -51,8 +49,7 @@ public class StreamsView {
     public StreamView copy(UUID source, UUID destination, long timestamp) {
         boolean written = false;
         while (!written) {
-            TokenResponse tokenResponse =
-                    runtime.getSequencerView().nextToken(Collections.singleton(destination), 1);
+            TokenResponse tokenResponse = runtime.getSequencerView().nextToken(Collections.singleton(destination), 1);
             if (!tokenResponse.getBackpointerMap().get(destination).equals(-1L)) {
                 try {
                     runtime.getAddressSpaceView().fillHole(tokenResponse.getToken());
@@ -63,8 +60,7 @@ public class StreamsView {
             }
             StreamCOWEntry entry = new StreamCOWEntry(source, timestamp);
             try {
-                runtime.getAddressSpaceView().write(tokenResponse.getToken(), Collections.singleton(destination),
-                        entry, tokenResponse.getBackpointerMap(), tokenResponse.getStreamAddresses());
+                runtime.getAddressSpaceView().write(tokenResponse.getToken(), Collections.singleton(destination), entry, tokenResponse.getBackpointerMap(), tokenResponse.getStreamAddresses());
                 written = true;
             } catch (OverwriteException oe) {
                 log.debug("hole fill during COW entry write, retrying...");
@@ -86,14 +82,12 @@ public class StreamsView {
      * @return The address this
      */
     public long write(Set<UUID> streamIDs, Object object) {
-        return acquireAndWrite(streamIDs, object, t -> true, t -> true);
+        return acquireAndWrite(streamIDs, object, ( t) -> true, ( t) -> true);
     }
 
     public void writeAt(TokenResponse address, Set<UUID> streamIDs, Object object) throws OverwriteException {
-        Function<UUID, Object> partialEntryFunction =
-                object instanceof IDivisibleEntry ? ((IDivisibleEntry)object)::divideEntry : null;
-        runtime.getAddressSpaceView().write(address.getToken(), streamIDs,
-                object, address.getBackpointerMap(), address.getStreamAddresses(), partialEntryFunction);
+        Function<UUID, Object> partialEntryFunction = object instanceof IDivisibleEntry ? ((IDivisibleEntry) object)::divideEntry : null;
+        runtime.getAddressSpaceView().write(address.getToken(), streamIDs, object, address.getBackpointerMap(), address.getStreamAddresses(), partialEntryFunction);
     }
 
     /**
@@ -108,9 +102,7 @@ public class StreamsView {
      * @param object The object to write to the stream.
      * @return The address this
      */
-    public long acquireAndWrite(Set<UUID> streamIDs, Object object,
-                                Function<TokenResponse, Boolean> acquisitionCallback,
-                                Function<TokenResponse, Boolean> deacquisitionCallback) {
+    public long acquireAndWrite(Set<UUID> streamIDs, Object object, Function<TokenResponse, Boolean> acquisitionCallback, Function<TokenResponse, Boolean> deacquisitionCallback) {
         boolean replexOverwrite = false;
         boolean overwrite = false;
         TokenResponse tokenResponse = null;
@@ -118,14 +110,12 @@ public class StreamsView {
             if (object instanceof TXEntry) {
                 long token;
                 if (overwrite) {
-                    TokenResponse temp =
-                            runtime.getSequencerView().nextToken(streamIDs, 1, true, false, true, ((TXEntry) object).getReadTimestamp());
+                    TokenResponse temp = runtime.getSequencerView().nextToken(streamIDs, 1, true, false, true, ((TXEntry) object).getReadTimestamp());
                     token = temp.getToken();
                     tokenResponse = new TokenResponse(token, temp.getBackpointerMap(), tokenResponse.getStreamAddresses());
                 } else {
                     log.trace("object is instance of TXEntry! readTimestamp: {}", ((TXEntry) object).getReadTimestamp());
-                    tokenResponse =
-                            runtime.getSequencerView().nextToken(streamIDs, 1, false, false, true, ((TXEntry) object).getReadTimestamp());
+                    tokenResponse = runtime.getSequencerView().nextToken(streamIDs, 1, false, false, true, ((TXEntry) object).getReadTimestamp());
                     token = tokenResponse.getToken();
                 }
                 log.trace("Write[{}]: acquired token = {}, global addr: {}", streamIDs, tokenResponse, token);
@@ -147,17 +137,14 @@ public class StreamsView {
                     return -1L;
                 }
                 try {
-                    runtime.getAddressSpaceView().write(token, streamIDs,
-                            object, tokenResponse.getBackpointerMap(), tokenResponse.getStreamAddresses());
+                    runtime.getAddressSpaceView().write(token, streamIDs, object, tokenResponse.getBackpointerMap(), tokenResponse.getStreamAddresses());
                     return token;
                 } catch (ReplexOverwriteException re) {
-                    //((TXEntry) object).setAborted(true);
                     if (deacquisitionCallback != null && !deacquisitionCallback.apply(tokenResponse)) {
                         log.trace("Acquisition rejected overwrite at {}, not retrying.", token);
                         return -1L;
                     }
-                    //
-                    return tokenResponse.getToken(); // uh, probably should figure out what is going on here.
+                    return tokenResponse.getToken();
                 } catch (OverwriteException oe) {
                     if (deacquisitionCallback != null && !deacquisitionCallback.apply(tokenResponse)) {
                         log.trace("Acquisition rejected overwrite at {}, not retrying.", token);
@@ -170,18 +157,17 @@ public class StreamsView {
             } else {
                 long token;
                 if (replexOverwrite) {
-                    tokenResponse =
-                            runtime.getSequencerView().nextToken(streamIDs, 1, false, true);
+                    tokenResponse = runtime.getSequencerView().nextToken(streamIDs, 1, false, true);
                     token = tokenResponse.getToken();
-                } else if (overwrite) {
-                    TokenResponse temp =
-                            runtime.getSequencerView().nextToken(streamIDs, 1, true, false);
-                    token = temp.getToken();
-                    tokenResponse = new TokenResponse(token, temp.getBackpointerMap(), tokenResponse.getStreamAddresses());
                 } else {
-                    tokenResponse =
-                            runtime.getSequencerView().nextToken(streamIDs, 1);
-                    token = tokenResponse.getToken();
+                    if (overwrite) {
+                        TokenResponse temp = runtime.getSequencerView().nextToken(streamIDs, 1, true, false);
+                        token = temp.getToken();
+                        tokenResponse = new TokenResponse(token, temp.getBackpointerMap(), tokenResponse.getStreamAddresses());
+                    } else {
+                        tokenResponse = runtime.getSequencerView().nextToken(streamIDs, 1);
+                        token = tokenResponse.getToken();
+                    }
                 }
                 log.trace("Write[{}]: acquired token = {}, global addr: {}", streamIDs, tokenResponse, token);
                 if (acquisitionCallback != null) {
@@ -196,10 +182,8 @@ public class StreamsView {
                     }
                 }
                 try {
-                    Function<UUID, Object> partialEntryFunction =
-                            object instanceof IDivisibleEntry ? ((IDivisibleEntry)object)::divideEntry : null;
-                    runtime.getAddressSpaceView().write(token, streamIDs,
-                            object, tokenResponse.getBackpointerMap(), tokenResponse.getStreamAddresses(), partialEntryFunction);
+                    Function<UUID, Object> partialEntryFunction = object instanceof IDivisibleEntry ? ((IDivisibleEntry) object)::divideEntry : null;
+                    runtime.getAddressSpaceView().write(token, streamIDs, object, tokenResponse.getBackpointerMap(), tokenResponse.getStreamAddresses(), partialEntryFunction);
                     return token;
                 } catch (ReplexOverwriteException re) {
                     if (deacquisitionCallback != null && !deacquisitionCallback.apply(tokenResponse)) {
@@ -220,6 +204,4 @@ public class StreamsView {
             }
         }
     }
-
-
 }
